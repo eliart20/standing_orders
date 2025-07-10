@@ -1,0 +1,11 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<suppressions>
+  <suppressMessage id="PX1016">
+    <target>StandingOrders.InventoryItemExt</target>
+    <syntaxNode>InventoryItemExt</syntaxNode>
+  </suppressMessage>
+  <suppressMessage id="PX1016">
+    <target>StandingOrders.SOCreateShipment_Extension</target>
+    <syntaxNode>SOCreateShipment_Extension</syntaxNode>
+  </suppressMessage>
+</suppressions>
