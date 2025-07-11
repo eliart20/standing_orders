@@ -20,7 +20,9 @@ namespace StandingOrders
     [PXDBInt]
     [PXUIField(DisplayName = "Book Series")]
     [PXUIVisible(typeof(Where<SOOrder.orderType.IsEqual<orderTypeST>>))]
-        //[PXUIRequired(typeof(Where<SOOrder.orderType.IsEqual<orderTypeST>>))] // make it required only for ST orders
+        [PXDefault(PersistingCheck = PXPersistingCheck.Nothing)]
+        [PXUIRequired(typeof(Where<SOOrder.orderType.IsEqual<orderTypeST>>))] // make it required only for ST orders
+        [PXUIEnabled(typeof(Where<SOOrder.customerID, IsNotNull, And<SOOrder.customerLocationID, IsNotNull>>))] // Enable only if there is a customer selected
         [PXSelector(
     typeof(Search2<
         InventoryItem.inventoryID,                          // key stored

@@ -1,5 +1,4 @@
 using System.Collections;
-using System.Linq;
 using PX.Data;
 using StandingOrders;
 
@@ -7,98 +6,62 @@ namespace PX.Objects.SO
 {
     // Acuminator disable once PX1016 ExtensionDoesNotDeclareIsActiveMethod extension should be constantly active
     public class SOOrderEntry_Extension : PXGraphExtension<PX.Objects.SO.SOOrderEntry>
-  {
+    {
         #region Event Handlers
 
-        public PXAction<SOOrder> AddSeriesItems;
-
-
-
-
-
-        [PXButton(CommitChanges = true)]
-        [PXUIField(DisplayName = "Add Series Items", Enabled = true)] //, Visibility = PXUIVisibility.V)]
-        [PXUIEnabled(typeof(Where<SOOrder.customerID, IsNotNull,
-                                                And<SOOrder.customerLocationID, IsNotNull>>))]
-        protected IEnumerable addSeriesItems(PXAdapter adapter)
+        /// <summary>
+        /// Fire whenever the Book Series field changes.
+        /// Clears existing lines and adds the series items.
+        /// </summary>
+        protected virtual void _(Events.FieldUpdated<SOOrder, SOOrderExt.usrBookSeriesCD> e)
         {
-            PXTrace.WriteInformation("AddSeriesItems button clicked.");
+            if (e.NewValue == null)                                           // ignore clears
+                return;
 
-            SOOrder order = Base.Document.Current;
-            if (order == null) return adapter.Get();
+            // remove any existing lines (if present)
+            foreach (SOLine line in Base.Transactions.Select())
+                Base.Transactions.Delete(line);
 
-            SOOrderExt orderExt = order.GetExtension<SOOrderExt>();
-            if (orderExt?.UsrBookSeriesCD == null)
-            {
-                const string SelectBookSeriesMessage = "Please select a Book Series before adding items.";
-                throw new PXException(SelectBookSeriesMessage);
-            }
+            AddSeriesItems((int?)e.NewValue);
+        }
 
+        #endregion
+
+        #region Helpers
+
+        private void AddSeriesItems(int? bookSeriesCD)
+        {
             Series series = PXSelect<
                                 Series,
                                 Where<Series.bookSeriesCD, Equal<Required<Series.bookSeriesCD>>>>
-                             .Select(Base, orderExt.UsrBookSeriesCD);
+                            .Select(Base, bookSeriesCD);
+
             if (series == null)
-            {
-                const string SeriesNotFoundMessage = "Series not found for the selected Book Series.";
-                throw new PXException(SeriesNotFoundMessage);
-            }
+                throw new PXException("Series not found for the selected Book Series.");
 
-            PXResultset<SeriesDetail> details =
-                PXSelect<
-                    SeriesDetail,
-                    Where<SeriesDetail.seriesID, Equal<Required<SeriesDetail.seriesID>>>, OrderBy<Asc<SeriesDetail.shipDate>>>
-                .Select(Base, series.BookSeriesID) ;
-
+            PXResultset<SeriesDetail> details = PXSelect<
+                                                    SeriesDetail,
+                                                    Where<SeriesDetail.seriesID, Equal<Required<SeriesDetail.seriesID>>>,
+                                                    OrderBy<Asc<SeriesDetail.shipDate>>>
+                                                .Select(Base, series.BookSeriesID);
 
             foreach (SeriesDetail det in details)
             {
-                if (det?.Bookid == null) continue;
+                if (det?.Bookid == null)
+                    continue;
 
                 SOLine line = new SOLine
                 {
-                    InventoryID = det.Bookid,  
+                    InventoryID = det.Bookid,
                     OrderQty = 1m,
                     SchedOrderDate = det.ShipDate,
                     SchedShipDate = det.ShipDate,
                     ShipComplete = SOShipComplete.BackOrderAllowed
                 };
 
-               
                 Base.Transactions.Insert(line);
             }
-
-            return adapter.Get();      
         }
-
-        protected virtual void _(Events.RowSelected<SOOrder> e)
-        {
-            if (e.Row == null) return;
-
-            bool isST = e.Row.OrderType == "ST";         
-            AddSeriesItems.SetVisible(isST);            
-            setAddSeriesEnabled(e);
-            PXTrace.WriteInformation($"Order Type: {e.Row.OrderType}, Is ST: {isST}");
-        }
-
-        protected void setAddSeriesEnabled(Events.RowSelected<SOOrder> e)
-        {
-            var customer  = e.Row?.CustomerID;
-            var location = e.Row?.CustomerLocationID;
-            var isST = e.Row?.OrderType == "ST"; 
-            if( customer == null || location == null || !isST)
-            {
-                AddSeriesItems.SetEnabled(false);
-            }
-            else
-            {
-                AddSeriesItems.SetEnabled(true);
-            }
-
-        }
-
-
-
 
         #endregion
     }
