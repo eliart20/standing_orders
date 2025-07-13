@@ -163,6 +163,12 @@ namespace StandingOrders
                                   Where<Series.bookSeriesID,
                                         Equal<Required<Series.bookSeriesID>>>>
                              .Select(Base, det.SeriesID);
+                if(ser.CycleID == null)
+                {
+                    PXTrace.WriteInformation(
+                        $"SeriesDetailID {det.SeriesRowID} skipped – no CycleID in Series");
+                    continue;
+                }
 
                 var (nextDate, delta) = GetNextCycle(det, ser);
                 if (nextDate == null) continue;
