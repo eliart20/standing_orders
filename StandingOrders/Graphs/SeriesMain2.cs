@@ -11,7 +11,7 @@ using System.Linq;
 namespace StandingOrders
 {
     /// <summary>
-    /// Series maintenance & blanket‑order synchronisation.
+    /// Series maintenance & blanket-order synchronisation.
     /// </summary>
     public class SeriesMain2 : PXGraph<SeriesMain2, Series>
     {
@@ -28,7 +28,7 @@ namespace StandingOrders
         public PXSelect<Cycle> Cycles;
         public PXSelect<CycleDetail> CycleDetails;
 
-        private const int BATCH_SIZE = 50;        /* option‑2 */
+        private const int BATCH_SIZE = 50;
 
         /* ───── UI action ───── */
         public PXAction<Series> SyncOrders;
@@ -47,7 +47,7 @@ namespace StandingOrders
         }
 
         //───────────────────────────────────────────────────────────────
-        // entry‑point
+        // entry-point
         //───────────────────────────────────────────────────────────────
         private void SyncOrdersWithSeries()
         {
@@ -78,14 +78,14 @@ namespace StandingOrders
             Dictionary<int, SeriesDetail> detailByInv =
                 seriesDetails.ToDictionary(d => d.Bookid.Value);
 
-            BulkUpdateShipDates(seriesCD, seriesDetails);                /* option‑3 */
+            BulkUpdateShipDates(seriesCD, seriesDetails);
 
             var orders = SelectFrom<SOOrder>
                 .Where<SOOrderExt.usrBookSeriesCD.IsEqual<@P.AsInt>>
                 .View.Select(this, seriesCD)
                 .RowCast<SOOrder>();
 
-            SOOrderEntry g = PXGraph.CreateInstance<SOOrderEntry>();     /* option‑1 */
+            SOOrderEntry g = PXGraph.CreateInstance<SOOrderEntry>();
             int dirty = 0;
 
             foreach (SOOrder hdr in orders)
@@ -167,69 +167,87 @@ namespace StandingOrders
         }
 
         //───────────────────────────────────────────────────────────────
-        // bulk ship‑date updater with correct header recalculation
+        // bulk ship-date updater via graph (SchedOrderDate / ShipDate)
         //───────────────────────────────────────────────────────────────
         private void BulkUpdateShipDates(int seriesCD, IEnumerable<SeriesDetail> details)
         {
             if (details == null) return;
+
+            Dictionary<int, SeriesDetail> detByInv = details
+                .Where(d => d.Bookid != null)
+                .ToDictionary(d => d.Bookid.Value);
 
             var orders = SelectFrom<SOOrder>
                 .Where<SOOrderExt.usrBookSeriesCD.IsEqual<@P.AsInt>>
                 .View.Select(this, seriesCD)
                 .RowCast<SOOrder>();
 
+            SOOrderEntry g = PXGraph.CreateInstance<SOOrderEntry>();
+            int dirty = 0;
+
             foreach (SOOrder hdr in orders)
             {
+                g.Document.Current =
+                    g.Document.Search<SOOrder.orderNbr>(hdr.OrderNbr, hdr.OrderType);
+                if (g.Document.Current == null) continue;
+
                 HashSet<int> childLn = GetChildLineNbrs(hdr.OrderType, hdr.OrderNbr);
 
-                var lines = SelectFrom<SOLine>
-                    .Where<SOLine.orderType.IsEqual<@P.AsString>
-                        .And<SOLine.orderNbr.IsEqual<@P.AsString>>>
-                    .View.Select(this, hdr.OrderType, hdr.OrderNbr)
-                    .RowCast<SOLine>();
-
                 DateTime? minDate = null;
+                bool changed = false;
 
-                foreach (SOLine ln in lines)
+                foreach (SOLine ln in g.Transactions.Select().RowCast<SOLine>())
                 {
                     if (ln.Completed == true || childLn.Contains(ln.LineNbr.Value)) continue;
 
-                    DateTime? newDate = ln.SchedOrderDate;
-
-                    SeriesDetail det = details.FirstOrDefault(d => d.Bookid == ln.InventoryID);
-
-
-                    // excerpt showing the 60-day restriction applied correctly
-                    if (det.ShipDate.HasValue
-                        && ln.SchedShipDate.HasValue
-                        && Math.Abs((det.ShipDate.Value - ln.SchedShipDate.Value).TotalDays) > 60)
+                    SeriesDetail det;
+                    if (ln.InventoryID != null && detByInv.TryGetValue(ln.InventoryID.Value, out det))
                     {
-                        continue;
+                        if (det?.ShipDate != null &&
+                            ln.SchedShipDate != null &&
+                            Math.Abs((det.ShipDate.Value - ln.SchedShipDate.Value).TotalDays) > 60)
+                            continue; // outside 60-day window
+
+                        if (det?.ShipDate != null && ln.SchedShipDate != det.ShipDate)
+                        {
+                            g.Transactions.Cache.SetValueExt<SOLine.schedOrderDate>(ln, det.ShipDate);
+                            g.Transactions.Cache.SetValueExt<SOLine.schedShipDate>(ln, det.ShipDate);
+                            g.Transactions.Update(ln);
+                            changed = true;
+                        }
                     }
 
-
-
-                    if (det != null && det.ShipDate != null && ln.SchedShipDate != det.ShipDate)
-                    {
-                        PXDatabase.Update<SOLine>(
-                            new PXDataFieldAssign<SOLine.schedOrderDate>(PXDbType.DateTime, det.ShipDate),
-                            new PXDataFieldAssign<SOLine.schedShipDate>(PXDbType.DateTime, det.ShipDate),
-                            new PXDataFieldRestrict<SOLine.orderType>(PXDbType.Char, hdr.OrderType),
-                            new PXDataFieldRestrict<SOLine.orderNbr>(PXDbType.NVarChar, hdr.OrderNbr),
-                            new PXDataFieldRestrict<SOLine.lineNbr>(PXDbType.Int, ln.LineNbr));
-
-                        newDate = det.ShipDate;                           /* use updated date */
-                    }
-
-                    if (newDate != null && (minDate == null || newDate < minDate))
-                        minDate = newDate;
+                    DateTime? candidate = ln.SchedOrderDate;
+                    if (candidate != null && (minDate == null || candidate < minDate))
+                        minDate = candidate;
                 }
 
-                PXDatabase.Update<SOOrder>(                               /* header refresh */
-                    new PXDataFieldAssign<SOOrder.minSchedOrderDate>(PXDbType.DateTime, minDate),
-                    new PXDataFieldRestrict<SOOrder.orderType>(PXDbType.Char, hdr.OrderType),
-                    new PXDataFieldRestrict<SOOrder.orderNbr>(PXDbType.NVarChar, hdr.OrderNbr));
+                if (changed)
+                {
+                    if (minDate != null &&
+                        g.Document.Current.MinSchedOrderDate != minDate)
+                    {
+                        g.Document.Cache.SetValueExt<SOOrder.minSchedOrderDate>(
+                            g.Document.Current, minDate);
+                    }
+
+                    dirty++;
+                }
+
+                if (dirty >= BATCH_SIZE)
+                {
+                    TryPersist(g);
+                    g.Clear();
+                    dirty = 0;
+                }
+                else
+                {
+                    g.Clear(); // keep the instance but reset caches
+                }
             }
+
+            if (dirty > 0)
+                TryPersist(g);
         }
 
         //───────────────────────────────────────────────────────────────
