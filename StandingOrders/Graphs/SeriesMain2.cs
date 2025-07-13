@@ -1,272 +1,270 @@
 using PX.Data;
-using System.Collections;
 using PX.Data.BQL;
 using PX.Data.BQL.Fluent;
 using PX.Objects.IN;
 using PX.Objects.SO;
 using System;
+using System.Collections;
 using System.Collections.Generic;
 using System.Linq;
 
 namespace StandingOrders
 {
-    // 1) Declare Series as the primary DAC
+    /// <summary>
+    /// Series maintenance & blanket‑order synchronisation.
+    /// </summary>
     public class SeriesMain2 : PXGraph<SeriesMain2, Series>
     {
-        // ────────────────────────────────────────────────────────────────
-        // Standard toolbar actions
-        // ────────────────────────────────────────────────────────────────
+        /* ───── toolbar ───── */
         public PXSave<Series> Save;
         public PXCancel<Series> Cancel;
         public PXInsert<Series> InsertSeries;
 
-        // ────────────────────────────────────────────────────────────────
-        // Data views
-        // ────────────────────────────────────────────────────────────────
+        /* ───── data views ───── */
         public PXSelect<Series> MasterView;
-
         public PXSelect<SeriesDetail,
             Where<SeriesDetail.seriesID, Equal<Current<Series.bookSeriesID>>>> DetailsView;
 
         public PXSelect<Cycle> Cycles;
         public PXSelect<CycleDetail> CycleDetails;
 
-        // ────────────────────────────────────────────────────────────────
-        // Constants
-        // ────────────────────────────────────────────────────────────────
-        private const int BATCH_SIZE = 50;          // option 2 – commit cadence
+        private const int BATCH_SIZE = 50;        /* option‑2 */
 
-        // ────────────────────────────────────────────────────────────────
-        // NEW: Sync SO Orders button
-        // ────────────────────────────────────────────────────────────────
+        /* ───── UI action ───── */
         public PXAction<Series> SyncOrders;
         [PXButton(CommitChanges = true)]
         [PXUIField(DisplayName = "Sync SO Orders")]
-        protected IEnumerable syncOrders(PXAdapter adapter)
+        protected IEnumerable syncOrders(PXAdapter a)
         {
             SyncOrdersWithSeries();
-            return adapter.Get();
+            return a.Get();
         }
 
-        // ────────────────────────────────────────────────────────────────
-        // Business events and helpers (original code – unchanged)
-        // ────────────────────────────────────────────────────────────────
-        #region Original graph logic (FieldUpdated, RowSelected, etc.)
-        // … (unchanged code from the original SeriesMain2.cs) …
-        #endregion
-
-        // ────────────────────────────────────────────────────────────────
-        // Persist override – always keep orders in sync
-        // ────────────────────────────────────────────────────────────────
         public override void Persist()
         {
-            base.Persist();            // first write the Series & details
-            SyncOrdersWithSeries();    // then propagate changes to orders
+            base.Persist();
+            SyncOrdersWithSeries();
         }
 
-        // ────────────────────────────────────────────────────────────────
-        // Core synchronisation routine
-        // ────────────────────────────────────────────────────────────────
-
+        //───────────────────────────────────────────────────────────────
+        // entry‑point
+        //───────────────────────────────────────────────────────────────
         private void SyncOrdersWithSeries()
         {
-            Series current = MasterView.Current;
-            if (current?.BookSeriesCD == null)
-                return;   // nothing selected
+            if (MasterView.Current?.BookSeriesCD == null) return;
 
-            // Capture the keys *before* hopping to the long op
-            int seriesID = current.BookSeriesID.Value;
-            int seriesCD = current.BookSeriesCD.Value;
+            int seriesID = MasterView.Current.BookSeriesID.Value;
+            int seriesCD = MasterView.Current.BookSeriesCD.Value;
 
-            // Fire-and-forget background process (shows a progress bar)
             PXLongOperation.StartOperation(this, () =>
             {
-                // Use a fresh graph so we don’t hold UI caches/locks
-                SeriesMain2 graph = PXGraph.CreateInstance<SeriesMain2>();
-                graph.ExecuteSeriesSync(seriesID, seriesCD);
+                PXGraph.CreateInstance<SeriesMain2>()
+                       .ExecuteSeriesSync(seriesID, seriesCD);
             });
         }
 
         //───────────────────────────────────────────────────────────────
-        // Actual synchronisation logic (now hybrid – options 1, 2, 3)
+        // main routine
         //───────────────────────────────────────────────────────────────
         private void ExecuteSeriesSync(int seriesID, int seriesCD)
         {
-            // 1) Get Series & its details
-            Series series = SelectFrom<Series>
-                .Where<Series.bookSeriesID.IsEqual<@P.AsInt>>
-                .View.Select(this, seriesID)
-                .TopFirst;
-            if (series == null) return;
-
             List<SeriesDetail> seriesDetails = SelectFrom<SeriesDetail>
-                    .Where<SeriesDetail.seriesID.IsEqual<@P.AsInt>>
-                    .View.Select(this, seriesID)
-                    .RowCast<SeriesDetail>()
-                    .Where(d => d.Bookid != null)
-                    .ToList();
+                .Where<SeriesDetail.seriesID.IsEqual<@P.AsInt>>
+                .View.Select(this, seriesID)
+                .RowCast<SeriesDetail>()
+                .Where(d => d.Bookid != null)
+                .ToList();
 
-            Dictionary<int, SeriesDetail> detailByInventory = seriesDetails.ToDictionary(d => d.Bookid.Value);
+            Dictionary<int, SeriesDetail> detailByInv =
+                seriesDetails.ToDictionary(d => d.Bookid.Value);
 
-            // ───── Option 3: bulk ship-date update (set-based SQL) ─────
-            BulkUpdateShipDates(seriesCD, seriesDetails);
+            BulkUpdateShipDates(seriesCD, seriesDetails);                /* option‑3 */
 
-            // 2) Find all orders linked to this series
             var orders = SelectFrom<SOOrder>
                 .Where<SOOrderExt.usrBookSeriesCD.IsEqual<@P.AsInt>>
                 .View.Select(this, seriesCD)
                 .RowCast<SOOrder>();
 
-            // ───── Option 1: reuse single graph; Option 2: batched commits ─────
-            SOOrderEntry orderGraph = PXGraph.CreateInstance<SOOrderEntry>();
-            int pendingModifications = 0;
+            SOOrderEntry g = PXGraph.CreateInstance<SOOrderEntry>();     /* option‑1 */
+            int dirty = 0;
 
-            foreach (SOOrder orderStub in orders)
+            foreach (SOOrder hdr in orders)
             {
-                // load order
-                orderGraph.Document.Current = orderGraph.Document
-                    .Search<SOOrder.orderNbr>(orderStub.OrderNbr, orderStub.OrderType);
-                if (orderGraph.Document.Current == null) continue;
+                g.Document.Current =
+                    g.Document.Search<SOOrder.orderNbr>(hdr.OrderNbr, hdr.OrderType);
+                if (g.Document.Current == null) continue;
 
-                Dictionary<int, SOLine> lineByInventory = orderGraph.Transactions.Select()
+                HashSet<int> childLn = GetChildLineNbrs(hdr.OrderType, hdr.OrderNbr);
+
+                Dictionary<int, SOLine> byInv = g.Transactions.Select()
                     .RowCast<SOLine>()
                     .Where(l => l.InventoryID != null)
                     .ToDictionary(l => l.InventoryID.Value);
 
                 bool changed = false;
 
-                // ───── Add / Update ─────
+                /* add / update */
                 foreach (SeriesDetail det in seriesDetails)
                 {
                     int invID = det.Bookid.Value;
-                    DateTime? targetDate = det.ShipDate;
+                    DateTime? tgt = det.ShipDate;
 
-                    if (lineByInventory.TryGetValue(invID, out SOLine line))
+                    if (byInv.TryGetValue(invID, out SOLine ln))
                     {
-                        if (!IsProcessed(line) && line.SchedShipDate != targetDate)
+                        if (!childLn.Contains(ln.LineNbr.Value) &&
+                            !IsProcessed(ln) &&
+                            ln.SchedShipDate != tgt)
                         {
-                            line.SchedOrderDate = targetDate;
-                            line.SchedShipDate = targetDate;
-                            orderGraph.Transactions.Update(line);
+                            ln.SchedOrderDate = tgt;
+                            ln.SchedShipDate = tgt;
+                            g.Transactions.Update(ln);
                             changed = true;
                         }
                     }
                     else
                     {
-                        SOLine newLine = new SOLine
+                        g.Transactions.Insert(new SOLine
                         {
                             InventoryID = invID,
                             OrderQty = 1m,
-                            SchedOrderDate = targetDate,
-                            SchedShipDate = targetDate,
+                            SchedOrderDate = tgt,
+                            SchedShipDate = tgt,
                             ShipComplete = SOShipComplete.BackOrderAllowed
-                        };
-                        orderGraph.Transactions.Insert(newLine);
+                        });
                         changed = true;
                     }
                 }
 
-                // ───── Remove ─────
-                foreach (SOLine line in lineByInventory.Values)
-                {
-                    if (detailByInventory.ContainsKey(line.InventoryID.Value))
-                        continue;
-                    if (!IsProcessed(line))
+                /* remove */
+                foreach (SOLine ln in byInv.Values)
+                    if (!detailByInv.ContainsKey(ln.InventoryID.Value) &&
+                        !childLn.Contains(ln.LineNbr.Value) &&
+                        !IsProcessed(ln))
                     {
-                        orderGraph.Transactions.Delete(line);
+                        g.Transactions.Delete(ln);
                         changed = true;
                     }
-                }
 
-                // ───── Commit control ─────
                 if (changed)
                 {
-                    pendingModifications++;
-                    if (pendingModifications >= BATCH_SIZE)
+                    dirty++;
+                    if (dirty >= BATCH_SIZE)
                     {
-                        TryPersist(orderGraph);
-                        orderGraph.Clear();          // flush caches for next batch
-                        pendingModifications = 0;
+                        TryPersist(g);
+                        g.Clear();
+                        dirty = 0;
                     }
                 }
                 else
-                {
-                    orderGraph.Clear();              // nothing changed – release caches
-                }
+                    g.Clear();
             }
 
-            // final flush
-            if (pendingModifications > 0)
+            if (dirty > 0)
             {
-                TryPersist(orderGraph);
-                orderGraph.Clear();
+                TryPersist(g);
+                g.Clear();
             }
         }
 
         //───────────────────────────────────────────────────────────────
-        // Bulk ship-date updater (option 3)
+        // bulk ship‑date updater with correct header recalculation
         //───────────────────────────────────────────────────────────────
         private void BulkUpdateShipDates(int seriesCD, IEnumerable<SeriesDetail> details)
         {
             if (details == null) return;
 
-            // 1) collect every SO order that belongs to the series
             var orders = SelectFrom<SOOrder>
                 .Where<SOOrderExt.usrBookSeriesCD.IsEqual<@P.AsInt>>
                 .View.Select(this, seriesCD)
                 .RowCast<SOOrder>();
 
-            // 2) issue one UPDATE per (order, inventory) pair
             foreach (SOOrder hdr in orders)
             {
-                foreach (SeriesDetail det in details)
+                HashSet<int> childLn = GetChildLineNbrs(hdr.OrderType, hdr.OrderNbr);
+
+                var lines = SelectFrom<SOLine>
+                    .Where<SOLine.orderType.IsEqual<@P.AsString>
+                        .And<SOLine.orderNbr.IsEqual<@P.AsString>>>
+                    .View.Select(this, hdr.OrderType, hdr.OrderNbr)
+                    .RowCast<SOLine>();
+
+                DateTime? minDate = null;
+
+                foreach (SOLine ln in lines)
                 {
-                    if (det.Bookid == null || det.ShipDate == null) continue;
+                    if (ln.Completed == true || childLn.Contains(ln.LineNbr.Value)) continue;
 
-                    PXDatabase.Update<SOLine>(
-                        new PXDataFieldAssign<SOLine.schedOrderDate>(PXDbType.DateTime, det.ShipDate),
-                        new PXDataFieldAssign<SOLine.schedShipDate>(PXDbType.DateTime, det.ShipDate),
+                    DateTime? newDate = ln.SchedOrderDate;
 
-                        new PXDataFieldRestrict<SOLine.orderType>(PXDbType.Char, 2, hdr.OrderType),
-                        new PXDataFieldRestrict<SOLine.orderNbr>(PXDbType.NVarChar, 15, hdr.OrderNbr),
-                        new PXDataFieldRestrict<SOLine.inventoryID>(PXDbType.Int, det.Bookid),
-                        new PXDataFieldRestrict<SOLine.completed>(PXDbType.Bit, false)
-                    );
+                    SeriesDetail det = details.FirstOrDefault(d => d.Bookid == ln.InventoryID);
+
+
+                    // excerpt showing the 60-day restriction applied correctly
+                    if (det.ShipDate.HasValue
+                        && ln.SchedShipDate.HasValue
+                        && Math.Abs((det.ShipDate.Value - ln.SchedShipDate.Value).TotalDays) > 60)
+                    {
+                        continue;
+                    }
+
+
+
+                    if (det != null && det.ShipDate != null && ln.SchedShipDate != det.ShipDate)
+                    {
+                        PXDatabase.Update<SOLine>(
+                            new PXDataFieldAssign<SOLine.schedOrderDate>(PXDbType.DateTime, det.ShipDate),
+                            new PXDataFieldAssign<SOLine.schedShipDate>(PXDbType.DateTime, det.ShipDate),
+                            new PXDataFieldRestrict<SOLine.orderType>(PXDbType.Char, hdr.OrderType),
+                            new PXDataFieldRestrict<SOLine.orderNbr>(PXDbType.NVarChar, hdr.OrderNbr),
+                            new PXDataFieldRestrict<SOLine.lineNbr>(PXDbType.Int, ln.LineNbr));
+
+                        newDate = det.ShipDate;                           /* use updated date */
+                    }
+
+                    if (newDate != null && (minDate == null || newDate < minDate))
+                        minDate = newDate;
                 }
+
+                PXDatabase.Update<SOOrder>(                               /* header refresh */
+                    new PXDataFieldAssign<SOOrder.minSchedOrderDate>(PXDbType.DateTime, minDate),
+                    new PXDataFieldRestrict<SOOrder.orderType>(PXDbType.Char, hdr.OrderType),
+                    new PXDataFieldRestrict<SOOrder.orderNbr>(PXDbType.NVarChar, hdr.OrderNbr));
             }
         }
 
         //───────────────────────────────────────────────────────────────
-        // Helper: safe persist with error logging
+        // helpers
         //───────────────────────────────────────────────────────────────
+        private HashSet<int> GetChildLineNbrs(string blanketType, string blanketNbr)
+        {
+            return SelectFrom<SOLine>
+                    .Where<SOLine.blanketType.IsEqual<@P.AsString>
+                        .And<SOLine.blanketNbr.IsEqual<@P.AsString>>
+                        .And<SOLine.blanketLineNbr.IsNotNull>>
+                    .View.Select(this, blanketType, blanketNbr)
+                    .RowCast<SOLine>()
+                    .Select(l => l.BlanketLineNbr.Value)
+                    .ToHashSet();
+        }
+
+        private static bool IsProcessed(SOLine l) =>
+            l.Completed == true ||
+            (l.ShippedQty ?? 0m) > 0m ||
+            (l.OpenQty ?? 0m) == 0m;
+
         private static void TryPersist(SOOrderEntry g)
         {
-            try
-            {
-                g.Persist();                     // cheaper than Save.Press()
-            }
+            try { g.Persist(); }
             catch (PXException ex)
-            {
-                PXTrace.WriteError($"Series sync save failed: {ex.Message}");
-            }
-        }
-
-        private static bool IsProcessed(SOLine line)
-        {
-            bool completed = line.Completed == true;
-            bool shipped = (line.ShippedQty ?? 0m) > 0m;
-            bool noOpen = (line.OpenQty ?? 0m) == 0m;
-            return completed || shipped || noOpen;
+            { PXTrace.WriteError($"Series sync save failed: {ex.Message}"); }
         }
 
         //───────────────────────────────────────────────────────────────
-        // ↓ Original event handlers – unchanged – keep existing logic ↓
+        // original event handlers (unchanged)
         //───────────────────────────────────────────────────────────────
         protected void _(Events.FieldUpdated<SeriesDetail, SeriesDetail.cycleMajor> e)
         {
             if (e.Row == null) return;
-
-            // Clear CycleMinor and upcoming fields when major changes
             e.Cache.SetValueExt<SeriesDetail.cycleMinor>(e.Row, null);
             e.Cache.SetValueExt<SeriesDetail.upcomingCycleID>(e.Row, null);
             e.Cache.SetValueExt<SeriesDetail.upcomingCycleDate>(e.Row, null);
@@ -294,7 +292,7 @@ namespace StandingOrders
                 string.IsNullOrEmpty(row.CycleMinor))
                 return;
 
-            CycleDetail upcomingCycle = SelectFrom<CycleDetail>
+            CycleDetail upcoming = SelectFrom<CycleDetail>
                 .Where<CycleDetail.cycleID.IsEqual<@P.AsInt>
                     .And<CycleDetail.cycleMajor.IsEqual<@P.AsString>>
                     .And<CycleDetail.cycleMinor.IsEqual<@P.AsString>>
@@ -305,21 +303,21 @@ namespace StandingOrders
                     row.CycleMajor,
                     row.CycleMinor);
 
-            if (upcomingCycle != null)
+            if (upcoming != null)
             {
-                cache.SetValueExt<SeriesDetail.upcomingCycleID>(row, upcomingCycle.CycleDetailID);
-                cache.SetValueExt<SeriesDetail.upcomingCycleDate>(row, upcomingCycle.Date);
+                cache.SetValueExt<SeriesDetail.upcomingCycleID>(row, upcoming.CycleDetailID);
+                cache.SetValueExt<SeriesDetail.upcomingCycleDate>(row, upcoming.Date);
 
                 if (setship)
                 {
-                    int leadTime = MasterView.Current.DefaultLeadTime ?? 0;
-                    cache.SetValueExt<SeriesDetail.shipDate>(row, upcomingCycle.Date?.AddDays(-leadTime));
+                    int lead = MasterView.Current.DefaultLeadTime ?? 0;
+                    cache.SetValueExt<SeriesDetail.shipDate>(row, upcoming.Date?.AddDays(-lead));
                 }
             }
             else
             {
                 PXTrace.WriteInformation(
-                    $"DEBUG: No upcoming cycle found for Major={row.CycleMajor}, Minor={row.CycleMinor}");
+                    $"DEBUG: No upcoming cycle for {row.CycleMajor}/{row.CycleMinor}");
             }
         }
 
@@ -331,47 +329,32 @@ namespace StandingOrders
                 !string.IsNullOrEmpty(e.Row.CycleMajor) &&
                 !string.IsNullOrEmpty(e.Row.CycleMinor))
             {
-                bool needsUpdate = e.Row.UpcomingCycleDate == null ||
-                                   e.Row.UpcomingCycleDate < this.Accessinfo.BusinessDate;
-
-                if (needsUpdate)
-                {
-                    PopulateUpcomingCycleFields(e.Cache, e.Row, true);
-                }
+                bool needs = e.Row.UpcomingCycleDate == null ||
+                             e.Row.UpcomingCycleDate < Accessinfo.BusinessDate;
+                if (needs) PopulateUpcomingCycleFields(e.Cache, e.Row, true);
             }
-
-            PXTrace.WriteInformation(
-                $"DEBUG ↓  Major={e.Row.CycleMajor}  Minor={e.Row.CycleMinor}  " +
-                $"ID={e.Row.UpcomingCycleID}  Date={e.Row.UpcomingCycleDate:d}");
         }
 
         protected void _(Events.FieldUpdated<Series, Series.cycleID> e)
         {
             if (e.Row == null) return;
-
-            foreach (SeriesDetail det in DetailsView.Select())
-            {
-                DetailsView.Delete(det);
-            }
-
+            foreach (SeriesDetail det in DetailsView.Select()) DetailsView.Delete(det);
             DetailsView.View.RequestRefresh();
         }
 
         protected void _(Events.RowSelected<Series> e)
         {
             if (e.Row == null) return;
-
-            bool refreshUpcomingDates = false;
-
-            if (refreshUpcomingDates && e.Row.CycleID != null)
+            bool refresh = false;
+            if (refresh && e.Row.CycleID != null)
             {
-                foreach (SeriesDetail detail in DetailsView.Select())
+                foreach (SeriesDetail det in DetailsView.Select())
                 {
-                    if (!string.IsNullOrEmpty(detail.CycleMajor) &&
-                        !string.IsNullOrEmpty(detail.CycleMinor))
+                    if (!string.IsNullOrEmpty(det.CycleMajor) &&
+                        !string.IsNullOrEmpty(det.CycleMinor))
                     {
-                        PopulateUpcomingCycleFields(DetailsView.Cache, detail, false);
-                        DetailsView.Cache.MarkUpdated(detail);
+                        PopulateUpcomingCycleFields(DetailsView.Cache, det, false);
+                        DetailsView.Cache.MarkUpdated(det);
                     }
                 }
             }
@@ -381,7 +364,8 @@ namespace StandingOrders
         {
             if (e.Row == null || MasterView.Current == null || e.NewValue == null) return;
 
-            if (MasterView.Current.CycleID != null && !string.IsNullOrEmpty(e.Row.CycleMajor))
+            if (MasterView.Current.CycleID != null &&
+                !string.IsNullOrEmpty(e.Row.CycleMajor))
             {
                 CycleDetail exists = SelectFrom<CycleDetail>
                     .Where<CycleDetail.cycleID.IsEqual<@P.AsInt>
@@ -394,9 +378,7 @@ namespace StandingOrders
 
                 if (exists == null)
                 {
-                    PXTrace.WriteInformation(
-                        $"DEBUG: CycleMinor '{e.NewValue}' does not exist for Major '{e.Row.CycleMajor}' " +
-                        $"in CycleID {MasterView.Current.CycleID}. Validation failed.");
+                    PXTrace.WriteInformation($"DEBUG: Minor '{e.NewValue}' not found");
                     e.Cancel = true;
                 }
             }

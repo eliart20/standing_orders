@@ -1,6 +1,7 @@
 ﻿using PX.Data;
 using PX.Data.BQL;
 using PX.Data.BQL.Fluent;
+using PX.Objects.CS;
 using PX.Objects.IN;
 using PX.Objects.SO;
 using StandingOrders;
@@ -16,7 +17,7 @@ namespace StandingOrders
     public class SOCreateShipment_Extension : PXGraphExtension<SOCreateShipment>
     {
         /* ───────────────────────────────────────────────────────── */
-        /* 1 – Inject Book‑Series filter into the main SO query      */
+        /* 1 – Inject Book-Series filter into the main SO query      */
         /* ───────────────────────────────────────────────────────── */
         public delegate void AddCommonFiltersDelegate(
             SOOrderFilter filter, PXSelectBase<SOOrder> cmd);
@@ -51,7 +52,7 @@ namespace StandingOrders
         }
 
         /* ───────────────────────────────────────────────────────── */
-        /* 3 – Refresh orders when Book‑Series filter changes        */
+        /* 3 – Refresh orders when Book-Series filter changes        */
         /* ───────────────────────────────────────────────────────── */
         protected void _(
             Events.FieldUpdated<SOOrderFilter, SOFilterExt.usrBookSeriesCD> e)
@@ -62,7 +63,7 @@ namespace StandingOrders
         }
 
         /* ───────────────────────────────────────────────────────── */
-        /* 4 – Helper: compute next cycle + lead‑time delta          */
+        /* 4 – Helper: compute next cycle + lead-time delta          */
         /* ───────────────────────────────────────────────────────── */
         private (DateTime? nextDate, TimeSpan delta) GetNextCycle(
             SeriesDetail det, Series series)
@@ -72,30 +73,25 @@ namespace StandingOrders
                 det.CycleMinor == null)
                 return (null, TimeSpan.Zero);
 
-            DateTime curr = det.UpcomingCycleDate
-                         ?? Base.Accessinfo.BusinessDate.Value;
+            DateTime today = Base.Accessinfo.BusinessDate.Value;
 
             CycleDetail next = PXSelect<
-                                    CycleDetail,
-                                    Where<CycleDetail.cycleID,
-                                          Equal<Required<CycleDetail.cycleID>>,
-                                      And<CycleDetail.cycleMajor,
-                                          Equal<Required<CycleDetail.cycleMajor>>,
-                                      And<CycleDetail.cycleMinor,
-                                          Equal<Required<CycleDetail.cycleMinor>>,
-                                      And<CycleDetail.date,
-                                          Greater<Required<CycleDetail.date>>>>>>,
-                                    OrderBy<Asc<CycleDetail.date>>>.
-                                SelectWindowed(Base, 0, 1,
-                                               series.CycleID,
-                                               det.CycleMajor,
-                                               det.CycleMinor,
-                                               curr);
+                                   CycleDetail,
+                                   Where<CycleDetail.cycleID, Equal<Required<CycleDetail.cycleID>>,
+                                     And<CycleDetail.cycleMajor, Equal<Required<CycleDetail.cycleMajor>>,
+                                     And<CycleDetail.cycleMinor, Equal<Required<CycleDetail.cycleMinor>>,
+                                     And<CycleDetail.date, Greater<Required<CycleDetail.date>>>>>>,
+                                   OrderBy<Asc<CycleDetail.date>>>.
+                               SelectWindowed(Base, 1, 1,            // first future row
+                                              series.CycleID,
+                                              det.CycleMajor,
+                                              det.CycleMinor,
+                                              today);
 
             if (next == null)
                 return (null, TimeSpan.Zero);
 
-            TimeSpan delta = next.Date.Value - curr;
+            TimeSpan delta = next.Date.Value - today;
             return (next.Date, delta);
         }
 
@@ -124,11 +120,12 @@ namespace StandingOrders
             foreach (SOOrder ord in Base.Orders.Select())
             {
                 foreach (SOLine ln in PXSelect<
-                               SOLine,
-                               Where<SOLine.orderType, Equal<Required<SOLine.orderType>>,
-                                 And<SOLine.orderNbr, Equal<Required<SOLine.orderNbr>>,
-                                 And<SOLine.schedOrderDate, LessEqual<Required<SOLine.schedOrderDate>>>>>>
-                             .Select(Base, ord.OrderType, ord.OrderNbr, cutOff))
+                                       SOLine,
+                                       Where<SOLine.orderType, Equal<Required<SOLine.orderType>>,
+                                         And<SOLine.orderNbr, Equal<Required<SOLine.orderNbr>>,
+                                         And<SOLine.schedOrderDate, LessEqual<Required<SOLine.schedOrderDate>>,
+                                         And<Sub<SOLine.orderQty, SOLine.qtyOnOrders>, Greater<decimal0>>>>>
+                                     >.Select(Base, ord.OrderType, ord.OrderNbr, cutOff))
                 {
                     if (ln.InventoryID != null)
                         shipItems.Add(ln.InventoryID.Value);
@@ -163,14 +160,14 @@ namespace StandingOrders
                                   Where<Series.bookSeriesID,
                                         Equal<Required<Series.bookSeriesID>>>>
                              .Select(Base, det.SeriesID);
-                if(ser.CycleID == null)
+                if (ser.CycleID == null)
                 {
                     PXTrace.WriteInformation(
                         $"SeriesDetailID {det.SeriesRowID} skipped – no CycleID in Series");
                     continue;
                 }
 
-                var (nextDate, delta) = GetNextCycle(det, ser);
+                var (nextDate, _) = GetNextCycle(det, ser);
                 if (nextDate == null) continue;
 
                 string itemCD = PXSelect<InventoryItem,
@@ -181,7 +178,14 @@ namespace StandingOrders
 
                 DateTime oldCycle = det.UpcomingCycleDate ?? Base.Accessinfo.BusinessDate.Value;
                 DateTime oldShip = det.ShipDate ?? DateTime.MinValue;
-                DateTime newShip = oldShip.Add(delta);
+                PXTrace.WriteInformation(
+                    $"SeriesDetailID {det.SeriesRowID} – " +
+                    $"UpcomingCycleDate={oldCycle:MM/dd/yyyy}, ShipDate={oldShip:MM/dd/yyyy}");
+                TimeSpan leadTime =  oldCycle - oldShip;                // preserve original offset
+                DateTime newShip = nextDate.Value - leadTime;
+                PXTrace.WriteInformation(
+                    $"Next cycle for {itemCD} is {nextDate:MM/dd/yyyy}, " +
+                    $"new ship date will be {newShip:MM/dd/yyyy} \n Lead ${leadTime} " );
 
                 sb.AppendLine($"{itemCD,-15} {det.CycleMajor}/{det.CycleMinor}  " +
                               $"Cycle {oldCycle:MM/dd/yyyy} → {nextDate:MM/dd/yyyy},  " +
@@ -209,10 +213,14 @@ namespace StandingOrders
                                         Equal<Required<Series.bookSeriesID>>>>
                              .Select(Base, det.SeriesID);
 
-                var (nextDate, delta) = GetNextCycle(det, ser);
+                var (nextDate, _) = GetNextCycle(det, ser);
                 if (nextDate == null) continue;
 
-                DateTime? newShip = det.ShipDate?.Add(delta);
+                TimeSpan leadTime = TimeSpan.Zero;
+                if (det.ShipDate.HasValue && det.UpcomingCycleDate.HasValue)
+                    leadTime = det.ShipDate.Value - det.UpcomingCycleDate.Value;
+
+                DateTime? newShip = det.ShipDate.HasValue ? nextDate.Value + leadTime : (DateTime?)null;
 
                 PXDatabase.Update<SeriesDetail>(
                     new PXDataFieldAssign<SeriesDetail.upcomingCycleDate>(nextDate),
