@@ -10,6 +10,7 @@ using System.Collections;
 using System.Collections.Generic;
 using System.Linq;
 using System.Text;
+using static StandingOrders.SOFilterExt;
 
 namespace StandingOrders
 {
@@ -60,6 +61,15 @@ namespace StandingOrders
             Base.Orders.Cache.ClearQueryCache();
             Base.Orders.View.RequestRefresh();
             PXTrace.WriteInformation($"Filter updated – BookSeriesCD is now '{e.NewValue}'");
+        }
+        protected void _(
+            Events.FieldUpdated<SOOrderFilter, SOOrderFilter.action> e)
+        {
+            var isShipAction = e.NewValue?.ToString() == SOCreateShipment.WellKnownActions.SOOrderScreen.CreateChildOrders;
+            if (!isShipAction)
+            {
+                e.Cache.SetValueExt<SOOrderFilter.action>(e.Row, null);
+            }
         }
 
         /* ───────────────────────────────────────────────────────── */
@@ -195,14 +205,16 @@ namespace StandingOrders
             if (sb.Length == 0)
             {
                 PXTrace.WriteInformation("ProcessSeries – no updates required");
-                throw new PXException("No SeriesDetail rows needed an update.");
+                //throw new PXException("No SeriesDetail rows needed an update.");
             }
-
-            if (Base.Orders.Ask("Confirm Updates", sb.ToString(), MessageButtons.YesNo)
-                != WebDialogResult.Yes)
+            if(sb.Length > 0)
             {
-                PXTrace.WriteInformation("ProcessSeries – user cancelled");
-                return adapter.Get();
+                if (Base.Orders.Ask("Confirm Updates", sb.ToString(), MessageButtons.YesNo)
+                    != WebDialogResult.Yes)
+                {
+                    PXTrace.WriteInformation("ProcessSeries – user cancelled");
+                    return adapter.Get();
+                }
             }
 
             /* 5.4 – Update SeriesDetail rows directly in DB          */
@@ -248,16 +260,20 @@ namespace StandingOrders
             PXCache sender, PXRowSelectedEventArgs e)
         {
             var row = (SOOrderFilter)e.Row;
-            bool enabled = row?.GetExtension<SOFilterExt>()?.UsrBookSeriesCD != null;
+            var ext = row?.GetExtension<SOFilterExt>();
 
-            ProcessSeries.SetEnabled(enabled);
-            ProcessSeries.SetVisible(enabled);
 
-            Base.Orders.SetProcessVisible(!enabled);
-            Base.Orders.SetProcessAllVisible(!enabled);
+            bool isseriesfiltered = ext?.UsrBookSeriesCD != null;
+
+            ProcessSeries.SetEnabled(isseriesfiltered);
+            ProcessSeries.SetVisible(isseriesfiltered);
+
+            Base.Orders.SetProcessVisible(!isseriesfiltered);
+            Base.Orders.SetProcessAllVisible(!isseriesfiltered);
+
 
             PXTrace.WriteInformation(
-                $"RowSelected – ProcessSeries button {(enabled ? "enabled" : "disabled")}");
+                $"RowSelected – ProcessSeries button {(isseriesfiltered ? "enabled" : "disabled")}");
         }
     }
 }

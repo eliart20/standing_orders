@@ -38,12 +38,11 @@ namespace PX.Objects.SO
 
             if (series == null)
                 throw new PXException("Series not found for the selected Book Series.");
-
-            PXResultset<SeriesDetail> details = PXSelect<
-                                                    SeriesDetail,
-                                                    Where<SeriesDetail.seriesID, Equal<Required<SeriesDetail.seriesID>>>,
-                                                    OrderBy<Asc<SeriesDetail.shipDate>>>
-                                                .Select(Base, series.BookSeriesID);
+            PXResultset<SeriesDetail> details = PXSelect<SeriesDetail,
+                Where<SeriesDetail.seriesID, Equal<Required<SeriesDetail.seriesID>>,
+                    And<SeriesDetail.shipDate, Greater<Required<SeriesDetail.shipDate>>>>,
+                OrderBy<Asc<SeriesDetail.shipDate>>>
+            .Select(Base, series.BookSeriesID, Base.Accessinfo.BusinessDate);
 
             foreach (SeriesDetail det in details)
             {
