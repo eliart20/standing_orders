@@ -66,6 +66,7 @@ namespace StandingOrders
         //───────────────────────────────────────────────────────────────
         private void ExecuteSeriesSync(int seriesID, int seriesCD)
         {
+            PXTrace.WriteInformation($"[SeriesSync] Processing series {seriesCD} ({seriesID})");
             var seriesDetails = SelectFrom<SeriesDetail>
                 .Where<SeriesDetail.seriesID.IsEqual<@P.AsInt>>
                 .View.Select(this, seriesID)
@@ -84,16 +85,24 @@ namespace StandingOrders
 
             foreach (SOOrder hdr in orders)
             {
+                PXTrace.WriteInformation($"[SeriesSync] Processing order {hdr.OrderType}-{hdr.OrderNbr}");
+
                 SOOrderEntry g = PXGraph.CreateInstance<SOOrderEntry>();
-                g.Document.Current =
-                    g.Document.Search<SOOrder.orderNbr>(hdr.OrderNbr, hdr.OrderType);
-                if (g.Document.Current == null) continue;
+                g.Document.Current = g.Document.Search<SOOrder.orderNbr>(hdr.OrderNbr, hdr.OrderType);
+                if (g.Document.Current == null)
+                {
+                    PXTrace.WriteWarning($"[SeriesSync] Order {hdr.OrderType}-{hdr.OrderNbr} not found ― skipped.");
+                    continue;
+                }
 
                 var childLn = GetChildLineNbrs(hdr.OrderType, hdr.OrderNbr);
 
+                /* build inventory map excluding processed & child lines */
                 var byInv = g.Transactions.Select()
                     .RowCast<SOLine>()
-                    .Where(l => l.InventoryID != null)
+                    .Where(l => l.InventoryID != null &&
+                                !IsProcessed(l) &&
+                                !childLn.Contains(l.LineNbr.Value))
                     .ToDictionary(l => l.InventoryID.Value);
 
                 bool changed = false;
@@ -104,38 +113,59 @@ namespace StandingOrders
                     int invID = det.Bookid.Value;
                     DateTime? tgt = ResolveShipDate(det, hdr, g.Accessinfo.BusinessDate);
 
-                    if (byInv.TryGetValue(invID, out SOLine ln))
+                    if (!IsShipDateAllowed(tgt, hdr.OrderDate, g.Accessinfo.BusinessDate))
                     {
-                        if (!childLn.Contains(ln.LineNbr.Value) &&
-                            !IsProcessed(ln) &&
-                            !Equals(ln.SchedShipDate, tgt))
+                        PXTrace.WriteInformation(
+                            $"[SeriesSync] Skipped inventory {invID} ― ship date {tgt:d} precedes order/today.");
+                        continue;
+                    }
+
+                    if (byInv.TryGetValue(invID, out SOLine ln)) /* ─ update ─ */
+                    {
+                        if (!Equals(ln.SchedShipDate, tgt))
                         {
+                            PXTrace.WriteInformation(
+                                $"[SeriesSync] Updating ship date on {invID} line {ln.LineNbr} " +
+                                $"from {ln.SchedShipDate:d} to {tgt:d}.");
+
                             g.Transactions.Cache.SetValueExt<SOLine.schedOrderDate>(ln, tgt);
                             g.Transactions.Cache.SetValueExt<SOLine.schedShipDate>(ln, tgt);
                             g.Transactions.Update(ln);
                             changed = true;
                         }
                     }
-                    else
+                    else                                         /* ─ insert ─ */
                     {
-                        g.Transactions.Insert(new SOLine
+                        var newLn = (SOLine)g.Transactions.Cache.CreateInstance();
+                        newLn = g.Transactions.Insert(newLn);
+                        if (newLn == null)
                         {
-                            InventoryID = invID,
-                            OrderQty = 1m,
-                            SchedOrderDate = tgt,
-                            SchedShipDate = tgt,
-                            ShipComplete = SOShipComplete.BackOrderAllowed
-                        });
+                            PXTrace.WriteError(
+                                $"[SeriesSync] Failed to create new SOLine for inventory {invID}.");
+                            continue;
+                        }
+
+                        /* set fields through cache to trigger defaulting */
+                        g.Transactions.Cache.SetValueExt<SOLine.inventoryID>(newLn, invID);
+                        g.Transactions.Cache.SetValueExt<SOLine.orderQty>(newLn, 1m);
+                        g.Transactions.Cache.SetValueExt<SOLine.schedOrderDate>(newLn, tgt);
+                        g.Transactions.Cache.SetValueExt<SOLine.schedShipDate>(newLn, tgt);
+                        g.Transactions.Cache.SetValueExt<SOLine.shipComplete>(
+                            newLn, SOShipComplete.BackOrderAllowed);
+                        g.Transactions.Update(newLn);
+                        PXTrace.WriteInformation(
+                            $"[SeriesSync] Inserted inventory {invID} on new line {newLn.LineNbr}; " +
+                            $"ship date {tgt:d}.");
                         changed = true;
                     }
                 }
 
                 /* remove superfluous */
                 foreach (SOLine ln in byInv.Values)
-                    if (!detailByInv.ContainsKey(ln.InventoryID.Value) &&
-                        !childLn.Contains(ln.LineNbr.Value) &&
-                        !IsProcessed(ln))
+                    if (!detailByInv.ContainsKey(ln.InventoryID.Value))
                     {
+                        PXTrace.WriteInformation(
+                            $"[SeriesSync] Removing inventory {ln.InventoryID} line {ln.LineNbr}.");
                         g.Transactions.Delete(ln);
                         changed = true;
                     }
@@ -162,8 +192,7 @@ namespace StandingOrders
             foreach (SOOrder hdr in orders)
             {
                 SOOrderEntry g = PXGraph.CreateInstance<SOOrderEntry>();
-                g.Document.Current =
-                    g.Document.Search<SOOrder.orderNbr>(hdr.OrderNbr, hdr.OrderType);
+                g.Document.Current = g.Document.Search<SOOrder.orderNbr>(hdr.OrderNbr, hdr.OrderType);
                 if (g.Document.Current == null) continue;
 
                 var childLn = GetChildLineNbrs(hdr.OrderType, hdr.OrderNbr);
@@ -183,14 +212,27 @@ namespace StandingOrders
 
                         if (ln.SchedShipDate != null && tgt != null &&
                             Math.Abs((tgt.Value - ln.SchedShipDate.Value).TotalDays) > 60)
+                        {
                             PXTrace.WriteInformation(
-                                $"Skipping ship date update for {ln.InventoryID} " +
-                                $"on order {hdr.OrderNbr} due to 60‑day rule.");
+                                $"[BulkUpdate] Skipped {ln.InventoryID} on order {hdr.OrderNbr} ― 60‑day rule.");
                             continue; // outside 60‑day window
+                        }
+                    }
+
+                    if (!IsShipDateAllowed(tgt, hdr.OrderDate, g.Accessinfo.BusinessDate))
+                    {
+                        PXTrace.WriteInformation(
+                            $"[BulkUpdate] Skipped {ln.InventoryID} on order {hdr.OrderNbr} ― " +
+                            $"ship date {tgt:d} precedes order/today.");
+                        continue;
                     }
 
                     if (!Equals(ln.SchedShipDate, tgt))
                     {
+                        PXTrace.WriteInformation(
+                            $"[BulkUpdate] Updating ship date on order {hdr.OrderNbr} " +
+                            $"item {ln.InventoryID} from {ln.SchedShipDate:d} to {tgt:d}.");
+
                         g.Transactions.Cache.SetValueExt<SOLine.schedOrderDate>(ln, tgt);
                         g.Transactions.Cache.SetValueExt<SOLine.schedShipDate>(ln, tgt);
                         g.Transactions.Update(ln);
@@ -205,8 +247,7 @@ namespace StandingOrders
                 if (changed && minDate != null &&
                     !Equals(g.Document.Current.MinSchedOrderDate, minDate))
                 {
-                    g.Document.Cache.SetValueExt<SOOrder.minSchedOrderDate>(
-                        g.Document.Current, minDate);
+                    g.Document.Cache.SetValueExt<SOOrder.minSchedOrderDate>(g.Document.Current, minDate);
                 }
 
                 if (changed)
@@ -221,6 +262,17 @@ namespace StandingOrders
                                                  SOOrder hdr,
                                                  DateTime? businessDate)
             => det?.ShipDate ?? businessDate;
+
+        private static bool IsShipDateAllowed(DateTime? tgt,
+                                              DateTime? orderDate,
+                                              DateTime? businessDate)
+        {
+            if (tgt == null) return true;
+            DateTime min = (businessDate ?? DateTime.Today).Date;
+            if (orderDate != null && orderDate.Value.Date > min)
+                min = orderDate.Value.Date;
+            return tgt.Value.Date >= min;
+        }
 
         private HashSet<int> GetChildLineNbrs(string blanketType, string blanketNbr) =>
             SelectFrom<SOLine>
@@ -239,9 +291,17 @@ namespace StandingOrders
 
         private static void TryPersist(SOOrderEntry g)
         {
-            try { g.Persist(); }
+            try
+            {
+                g.Persist();
+                PXTrace.WriteInformation(
+                    $"[SeriesSync] Persisted order {g.Document.Current.OrderType}-{g.Document.Current.OrderNbr}.");
+            }
             catch (PXException ex)
-            { PXTrace.WriteError($"Series sync save failed: {ex.Message}"); }
+            {
+                PXTrace.WriteError(
+                    $"[SeriesSync] Save failed for order {g.Document.Current.OrderType}-{g.Document.Current.OrderNbr}: {ex.Message}");
+            }
         }
 
         //───────────────────────────────────────────────────────────────
@@ -364,3 +424,4 @@ namespace StandingOrders
         }
     }
 }
+
