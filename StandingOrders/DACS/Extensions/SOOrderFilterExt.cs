@@ -7,22 +7,22 @@ using StandingOrders;          // namespace that contains Series DAC
 // Acuminator disable once PX1016 ExtensionDoesNotDeclareIsActiveMethod extension should be constantly active
 namespace StandingOrders
 {
-    public class orderTypeST : PX.Data.BQL.BqlString.Constant<orderTypeST>
-    {
-        public orderTypeST() : base("ST") { }
-    }
 
     // Acuminator disable once PX1016 ExtensionDoesNotDeclareIsActiveMethod extension should be constantly active
-    public sealed class SOOrderExt : PXCacheExtension<SOOrder>
+    public sealed class SOOrderFilterExt : PXCacheExtension<SOOrderFilter>
+
 {
 
+    public class actionShip : PX.Data.BQL.BqlString.Constant<orderTypeST>
+    {
+        public actionShip() : base(SOCreateShipment.WellKnownActions.SOOrderScreen.CreateChildOrders) { }
+    }
+
+
     #region UsrBookSeriesCD
-    [PXDBInt]
-    [PXUIField(DisplayName = "Book Series")]
-    [PXUIVisible(typeof(Where<SOOrder.orderType.IsEqual<orderTypeST>>))]
-        [PXDefault(PersistingCheck = PXPersistingCheck.Nothing)]
-        [PXUIRequired(typeof(Where<SOOrder.orderType.IsEqual<orderTypeST>>))] // make it required only for ST orders
-        [PXUIEnabled(typeof(Where<SOOrder.customerID, IsNotNull, And<SOOrder.customerLocationID, IsNotNull>>))] // Enable only if there is a customer selected
+    [PXInt]
+    [PXUIField(DisplayName = STMessages.BookSeries)]
+    [PXUIVisible(typeof(Where<SOOrderFilter.action.IsEqual<actionShip>>))]
         [PXSelector(
     typeof(Search2<
         InventoryItem.inventoryID,                          // key stored
@@ -33,7 +33,12 @@ namespace StandingOrders
     ValidateValue = false)]// tooltip/description
         public int? UsrBookSeriesCD { get; set; }
     public abstract class usrBookSeriesCD : PX.Data.BQL.BqlInt.Field<usrBookSeriesCD> { }
-    #endregion
-}
+        #endregion
+
+
+
+    }
+
+
 
 }

@@ -58,31 +58,25 @@
   </ItemGroup>
   <ItemGroup>
     <Compile Include="ChildOrders.cs" />
-    <Compile Include="DACS\Extensions\SOOrderFilter.cs" />
+    <Compile Include="DACS\Extensions\SOOrderFilterExt.cs" />
     <Compile Include="DACS\Projections\SeriesDetailProj.cs" />
-    <Compile Include="Graphs\Extensions\SOCreateShipment.cs" />
+    <Compile Include="Graphs\Extensions\SOCreateShipmentExt.cs" />
     <Compile Include="Graphs\RecycleSeries.cs" />
     <Compile Include="Graphs\SeriesMain2.cs" />
     <Compile Include="DACS\SeriesDetail.cs" />
     <Compile Include="DACS\CycleDetail.cs" />
     <Compile Include="DACS\Series.cs" />
     <Compile Include="DACS\Cycle.cs" />
-    <Compile Include="Graphs\Extensions\SOOrderEntry.cs" />
-    <Compile Include="DACS\Extensions\SOOrder.cs" />
+    <Compile Include="Graphs\Extensions\SOOrderEntryExt.cs" />
+    <Compile Include="DACS\Extensions\SOOrderExt.cs" />
     <Compile Include="Messages.cs" />
     <Compile Include="Properties\AssemblyInfo.cs" />
   </ItemGroup>
   <ItemGroup>
-    <PackageReference Include="Microsoft.Bcl.AsyncInterfaces">
-      <Version>9.0.2</Version>
-    </PackageReference>
-    <PackageReference Include="Microsoft.Extensions.Options.ConfigurationExtensions" Version="9.0.0" />
-    <PackageReference Include="System.Runtime.CompilerServices.Unsafe">
-      <Version>6.0.0</Version>
-    </PackageReference>
+    <AdditionalFiles Include="StandingOrders.acuminator" />
   </ItemGroup>
   <ItemGroup>
-    <AdditionalFiles Include="StandingOrders.acuminator" />
+    <Content Include="Claude.MD" />
   </ItemGroup>
   <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets" />
   <!-- To modify your build process, add your task inside one of the targets below and uncomment it. 
