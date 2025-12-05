@@ -136,27 +136,40 @@ namespace StandingOrders
                     }
                     else                                         /* ─ insert ─ */
                     {
-                        var newLn = (SOLine)g.Transactions.Cache.CreateInstance();
-                        newLn = g.Transactions.Insert(newLn);
-                        if (newLn == null)
+                        try
+                        {
+                            var newLn = (SOLine)g.Transactions.Cache.CreateInstance();
+                            newLn.OrderType = hdr.OrderType;
+                            newLn.OrderNbr = hdr.OrderNbr;
+                            
+                            /* insert first to get line number and defaults */
+                            newLn = g.Transactions.Insert(newLn);
+                            if (newLn == null)
+                            {
+                                PXTrace.WriteError(
+                                    $"[SeriesSync] Failed to create new SOLine for inventory {invID}.");
+                                continue;
+                            }
+
+                            /* now set the fields after insert has created the line */
+                            g.Transactions.Cache.SetValueExt<SOLine.inventoryID>(newLn, invID);
+                            g.Transactions.Cache.SetValueExt<SOLine.orderQty>(newLn, 1m);
+                            g.Transactions.Cache.SetValueExt<SOLine.schedOrderDate>(newLn, tgt);
+                            g.Transactions.Cache.SetValueExt<SOLine.schedShipDate>(newLn, tgt);
+                            g.Transactions.Cache.SetValueExt<SOLine.shipComplete>(
+                                newLn, SOShipComplete.BackOrderAllowed);
+                            newLn = g.Transactions.Update(newLn);
+                            
+                            PXTrace.WriteInformation(
+                                $"[SeriesSync] Inserted inventory {invID} on new line {newLn.LineNbr}; " +
+                                $"ship date {tgt:d}.");
+                            changed = true;
+                        }
+                        catch (Exception ex)
                         {
                             PXTrace.WriteError(
-                                $"[SeriesSync] Failed to create new SOLine for inventory {invID}.");
-                            continue;
+                                $"[SeriesSync] Failed to insert inventory {invID}: {ex.Message}");
                         }
-
-                        /* set fields through cache to trigger defaulting */
-                        g.Transactions.Cache.SetValueExt<SOLine.inventoryID>(newLn, invID);
-                        g.Transactions.Cache.SetValueExt<SOLine.orderQty>(newLn, 1m);
-                        g.Transactions.Cache.SetValueExt<SOLine.schedOrderDate>(newLn, tgt);
-                        g.Transactions.Cache.SetValueExt<SOLine.schedShipDate>(newLn, tgt);
-                        g.Transactions.Cache.SetValueExt<SOLine.shipComplete>(
-                            newLn, SOShipComplete.BackOrderAllowed);
-                        g.Transactions.Update(newLn);
-                        PXTrace.WriteInformation(
-                            $"[SeriesSync] Inserted inventory {invID} on new line {newLn.LineNbr}; " +
-                            $"ship date {tgt:d}.");
-                        changed = true;
                     }
                 }
 

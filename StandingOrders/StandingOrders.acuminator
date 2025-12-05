@@ -5,7 +5,7 @@
     <syntaxNode>InventoryItemExt</syntaxNode>
   </suppressMessage>
   <suppressMessage id="PX1016">
-    <target>StandingOrders.SOCreateShipment_Extension</target>
-    <syntaxNode>SOCreateShipment_Extension</syntaxNode>
+    <target>StandingOrders.SOCreateShipmentExt</target>
+    <syntaxNode>SOCreateShipmentExt</syntaxNode>
   </suppressMessage>
 </suppressions>

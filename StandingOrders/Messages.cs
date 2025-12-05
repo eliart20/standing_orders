@@ -12,14 +12,24 @@ namespace StandingOrders
      [PXLocalizable]
     public static class STMessages           // <- localizable constants
     {
+        // Order and Shipment Messages
         public const string OrderNotFound = "Sales Order {0}-{1} was not found.";
         public const string NoOpenQtyForItem = "Order {0}-{1} has no open quantity for item {2}.";
         public const string SiteCannotBeBlank = "Site cannot be determined for shipment.";
-        public const string SeriesNotSelected = "No Book Series selected.";
-        public const string NoItemsToProcessForSeries = "No lines to process for Book Series {0}.";
-        public const string NoLinesToProcess = "No lines to process for the current filter.";
-
-
+        
+        // Series Processing Messages
+        public const string SeriesNotFoundForBookSeries = "Series not found for the selected Book Series.";
+        public const string SelectBookSeriesFirst = "Select a Book Series first.";
+        public const string NoShippableLinesFound = "No shippable lines found for the current filter.";
+        public const string NoSeriesDetailRowsMatch = "No SeriesDetail rows match the items being shipped.";
+        
+        // UI Display Names
+        public const string ProcessSeries = "Process Series";
+        public const string BookSeries = "Book Series";
+        public const string InventoryID = "Inventory ID";
+        
+        // Dialog Titles
+        public const string ConfirmUpdates = "Confirm Updates";
 
     }
 }

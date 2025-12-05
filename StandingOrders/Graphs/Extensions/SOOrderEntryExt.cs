@@ -1,11 +1,10 @@
-using System.Collections;
 using PX.Data;
 using StandingOrders;
 
 namespace PX.Objects.SO
 {
     // Acuminator disable once PX1016 ExtensionDoesNotDeclareIsActiveMethod extension should be constantly active
-    public class SOOrderEntry_Extension : PXGraphExtension<PX.Objects.SO.SOOrderEntry>
+    public class SOOrderEntryExt : PXGraphExtension<SOOrderEntry>
     {
         #region Event Handlers
 
@@ -37,7 +36,7 @@ namespace PX.Objects.SO
                             .Select(Base, bookSeriesCD);
 
             if (series == null)
-                throw new PXException("Series not found for the selected Book Series.");
+                throw new PXException(STMessages.SeriesNotFoundForBookSeries);
             PXResultset<SeriesDetail> details = PXSelect<SeriesDetail,
                 Where<SeriesDetail.seriesID, Equal<Required<SeriesDetail.seriesID>>,
                     And<SeriesDetail.shipDate, Greater<Required<SeriesDetail.shipDate>>>>,

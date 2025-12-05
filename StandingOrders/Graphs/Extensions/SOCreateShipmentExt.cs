@@ -1,21 +1,16 @@
 ﻿using PX.Data;
-using PX.Data.BQL;
-using PX.Data.BQL.Fluent;
 using PX.Objects.CS;
 using PX.Objects.IN;
 using PX.Objects.SO;
-using StandingOrders;
 using System;
 using System.Collections;
 using System.Collections.Generic;
 using System.Linq;
 using System.Text;
-using static StandingOrders.SOFilterExt;
 
 namespace StandingOrders
 {
-    // Acuminator disable once PX1016 ExtensionDoesNotDeclareIsActiveMethod extension should be constantly active
-    public class SOCreateShipment_Extension : PXGraphExtension<SOCreateShipment>
+    public class SOCreateShipmentExt : PXGraphExtension<SOCreateShipment>
     {
         /* ───────────────────────────────────────────────────────── */
         /* 1 – Inject Book-Series filter into the main SO query      */
@@ -31,12 +26,12 @@ namespace StandingOrders
         {
             baseMethod(filter, cmd);
 
-            var fExt = filter.GetExtension<SOFilterExt>();
+            var fExt = filter.GetExtension<SOOrderFilterExt>();
             if (fExt?.UsrBookSeriesCD != null)
             {
                 cmd.WhereAnd<
                     Where<SOOrderExt.usrBookSeriesCD,
-                          Equal<Current<SOFilterExt.usrBookSeriesCD>>>>();
+                          Equal<Current<SOOrderFilterExt.usrBookSeriesCD>>>>();
 
                 PXTrace.WriteInformation(
                     $"AddCommonFilters – limited SOOrder view to BookSeriesCD '{fExt.UsrBookSeriesCD}'");
@@ -56,7 +51,7 @@ namespace StandingOrders
         /* 3 – Refresh orders when Book-Series filter changes        */
         /* ───────────────────────────────────────────────────────── */
         protected void _(
-            Events.FieldUpdated<SOOrderFilter, SOFilterExt.usrBookSeriesCD> e)
+            Events.FieldUpdated<SOOrderFilter, SOOrderFilterExt.usrBookSeriesCD> e)
         {
             Base.Orders.Cache.ClearQueryCache();
             Base.Orders.View.RequestRefresh();
@@ -65,10 +60,10 @@ namespace StandingOrders
         protected void _(
             Events.FieldUpdated<SOOrderFilter, SOOrderFilter.action> e)
         {
-            var isShipAction = e.NewValue?.ToString() == SOCreateShipment.WellKnownActions.SOOrderScreen.CreateChildOrders;
-            if (!isShipAction)
+            var createChildOrdersAction = e.NewValue?.ToString() == SOCreateShipment.WellKnownActions.SOOrderScreen.CreateChildOrders;
+            if (!createChildOrdersAction && e.NewValue != null)
             {
-                e.Cache.SetValueExt<SOOrderFilter.action>(e.Row, null);
+                e.Cache.SetValue<SOOrderFilterExt.usrBookSeriesCD>(e.Row, null);
             }
         }
 
@@ -110,14 +105,14 @@ namespace StandingOrders
         /* ───────────────────────────────────────────────────────── */
         public PXAction<SOOrderFilter> ProcessSeries;
         [PXButton(CommitChanges = true)]
-        [PXUIField(DisplayName = "Process Series")]
+        [PXUIField(DisplayName = STMessages.ProcessSeries)]
         protected IEnumerable processSeries(PXAdapter adapter)
         {
             var filter = Base.Filter.Current;
-            var fExt = filter?.GetExtension<SOFilterExt>();
+            var fExt = filter?.GetExtension<SOOrderFilterExt>();
 
             if (fExt?.UsrBookSeriesCD == null)
-                throw new PXException("Select a Book Series first.");
+                throw new PXException(STMessages.SelectBookSeriesFirst);
 
             PXTrace.WriteInformation($"ProcessSeries – start (BookSeriesCD = '{fExt.UsrBookSeriesCD}')");
 
@@ -144,7 +139,7 @@ namespace StandingOrders
             PXTrace.WriteInformation($"ProcessSeries – {shipItems.Count} item(s) scheduled for shipment before {cutOff:d}");
 
             if (!shipItems.Any())
-                throw new PXException("No shippable lines found for the current filter.");
+                throw new PXException(STMessages.NoShippableLinesFound);
 
             /* 5.2 – SeriesDetail rows tied to those items            */
             var details = PXSelectJoin<
@@ -160,7 +155,7 @@ namespace StandingOrders
             PXTrace.WriteInformation($"ProcessSeries – {details.Count} SeriesDetail row(s) need evaluation");
 
             if (!details.Any())
-                throw new PXException("No SeriesDetail rows match the items being shipped.");
+                throw new PXException(STMessages.NoSeriesDetailRowsMatch);
 
             /* 5.3 – Preview dialog                                   */
             var sb = new StringBuilder();
@@ -209,7 +204,7 @@ namespace StandingOrders
             }
             if(sb.Length > 0)
             {
-                if (Base.Orders.Ask("Confirm Updates", sb.ToString(), MessageButtons.YesNo)
+                if (Base.Orders.Ask(STMessages.ConfirmUpdates, sb.ToString(), MessageButtons.YesNo)
                     != WebDialogResult.Yes)
                 {
                     PXTrace.WriteInformation("ProcessSeries – user cancelled");
@@ -260,7 +255,7 @@ namespace StandingOrders
             PXCache sender, PXRowSelectedEventArgs e)
         {
             var row = (SOOrderFilter)e.Row;
-            var ext = row?.GetExtension<SOFilterExt>();
+            var ext = row?.GetExtension<SOOrderFilterExt>();
 
 
             bool isseriesfiltered = ext?.UsrBookSeriesCD != null;

@@ -40,7 +40,7 @@ namespace StandingOrders
                      And<INItemClass.itemClassCD,
                          Equal<ItemSeriesClass>>>>),          // <-- filter
     SubstituteKey = typeof(InventoryItem.inventoryCD),
-    DescriptionField = typeof(InventoryItem.descr))]
+    DescriptionField = typeof(InventoryItem.descr), ValidateValue = false)] 
         public virtual int? BookSeriesCD { get; set; }
         public abstract class bookSeriesCD : PX.Data.BQL.BqlInt.Field<bookSeriesCD> { }
         #endregion
