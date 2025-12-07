@@ -31,5 +31,8 @@ namespace StandingOrders
         // Dialog Titles
         public const string ConfirmUpdates = "Confirm Updates";
 
+        // Validation Messages
+        public const string MultipleCyclesDetected = "Cannot process shipment: multiple cycles detected. Only one cycle can be shipped at a time.\n\n{0}";
+
     }
 }

@@ -157,6 +157,24 @@ namespace StandingOrders
             if (!details.Any())
                 throw new PXException(STMessages.NoSeriesDetailRowsMatch);
 
+            /* 5.2a – Validate only one cycle is being shipped        */
+            var cycleGroups = details
+                .Where(d => d.CycleMajor != null && d.CycleMinor != null)
+                .GroupBy(d => new { d.CycleMajor, d.CycleMinor })
+                .OrderBy(g => g.Min(d => d.ShipDate ?? DateTime.MaxValue))
+                .ToList();
+
+            if (cycleGroups.Count > 1)
+            {
+                var cycleInfo = new StringBuilder();
+                foreach (var grp in cycleGroups)
+                {
+                    DateTime? firstSchedDate = grp.Min(d => d.ShipDate);
+                    cycleInfo.AppendLine($"Cycle: {grp.Key.CycleMajor}/{grp.Key.CycleMinor}, Scheduled Order Date: {firstSchedDate:MM/dd/yyyy}");
+                }
+                throw new PXException(STMessages.MultipleCyclesDetected, cycleInfo.ToString());
+            }
+
             /* 5.3 – Preview dialog                                   */
             var sb = new StringBuilder();
             foreach (SeriesDetail det in details)
@@ -192,9 +210,9 @@ namespace StandingOrders
                     $"Next cycle for {itemCD} is {nextDate:MM/dd/yyyy}, " +
                     $"new ship date will be {newShip:MM/dd/yyyy} \n Lead ${leadTime} " );
 
-                sb.AppendLine($"{itemCD,-15} {det.CycleMajor}/{det.CycleMinor}  " +
-                              $"Cycle {oldCycle:MM/dd/yyyy} → {nextDate:MM/dd/yyyy},  " +
-                              $"Ship {oldShip:MM/dd/yyyy} → {newShip:MM/dd/yyyy}");
+                sb.Append($"{itemCD,-15} {det.CycleMajor}/{det.CycleMinor}\r\n" +
+                          $"  Cycle {oldCycle:MM/dd/yyyy} → {nextDate:MM/dd/yyyy}\r\n" +
+                          $"  Ship {oldShip:MM/dd/yyyy} → {newShip:MM/dd/yyyy}\r\n\r\n");
             }
 
             if (sb.Length == 0)
